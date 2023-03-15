@@ -1,9 +1,20 @@
 #include "sig_handler.h"
+#include "web_server.h"
 #include <csignal>
 #include <cstring>
 #include <cassert>
-void signal_handler::sig_callback(int sig) {
+#include <arpa/inet.h>
+#include <cerrno>
 
+int* signal_handler::pipeFD = nullptr;
+
+// alarm信号的handler
+void signal_handler::sig_callback(int sig) {
+    auto save_errno = errno;
+    char sig_num = sig;
+    assert(nullptr != pipeFD);
+    ::send(pipeFD[1], &sig_num, sizeof(sig_num), 0);
+    errno = save_errno;
 }
 
 void signal_handler::register_sig(int tar_sig, void(*handler)(int), bool restart) {

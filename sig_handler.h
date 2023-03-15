@@ -3,6 +3,7 @@
 
 class signal_handler {
 public:
+    static int* pipeFD;
     static void sig_callback(int sig);
     static void register_sig(int sig, void (*handler)(int), bool restart);
 };

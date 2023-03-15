@@ -7,3 +7,5 @@ file(GLOB SRCS "${CMAKE_SOURCE_DIR}/*.cpp")
 message(STATUS ${SRCS})
 
 add_executable(${CMAKE_PROJECT_NAME} ${SRCS})
+
+target_link_libraries(${CMAKE_PROJECT_NAME} pthread)

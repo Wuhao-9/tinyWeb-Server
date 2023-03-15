@@ -3,6 +3,7 @@
 #include <sys/epoll.h>
 #include <fcntl.h>
 #include <cassert>
+
 void utility::register_event(int epoll_instance, int fd, bool oneshot, int is_ET) {
 
     epoll_event target_event = {};

@@ -1,6 +1,7 @@
 #if !defined(THREAD_POOL_HPP_)
 #define THREAD_POOL_HPP_
 
+#include "http_conn.h"
 #include "config.h"
 #include <pthread.h>
 #include <iostream>
@@ -10,8 +11,10 @@
 #include <condition_variable>
 template <typename T>
 class thread_pool {
+public:
     thread_pool();
     ~thread_pool();
+    void enqueue(http_conn* client, char which);
 private:
     static void* work_thread(void*);
     void stop_worker(); 
@@ -33,23 +36,22 @@ thread_pool<T>::thread_pool()
     , cv_()
     , stop_(false)
 {
-    using ser_config;
     try {
-        threads_array_ = new ::pthread_t[thread_num]; 
+        threads_array_ = new ::pthread_t[ser_config::thread_num]; 
     } catch (std::bad_alloc& err) {
         std::cerr << "threads memory allocate failed!" << std::endl;
         throw;
     }
 
-    for (int i = 0; i < thread_num; i++) {
+    for (int i = 0; i < ser_config::thread_num; i++) {
         if (::pthread_create(threads_array_+i, nullptr, work_thread, this) == -1) {
             this->stop_worker();
-            throw std::runtime_error();
+            throw std::runtime_error("create thread failure");
         } else {
             auto ret = ::pthread_detach(threads_array_[i]);
             if (ret != 0) {
                 this->stop_worker();
-                throw std::runtime_error();
+                throw std::runtime_error("detach thread failure");
             }
         }
     }
@@ -58,6 +60,20 @@ thread_pool<T>::thread_pool()
 template<typename T>
 thread_pool<T>::~thread_pool() {
     this->stop_worker();
+}
+
+template<typename T>
+void thread_pool<T>::enqueue(http_conn* request, char which) {
+    {
+        std::lock_guard<std::mutex> locker(mutex_);
+        if (request_queue_.size() >= MAX_REQUESTS) {
+            std::clog << "request queue is full" << std::endl;
+            return;
+        }
+        request->setStatus(which);
+        request_queue_.emplace_back(request);
+    }
+    cv_.notify_one();
 }
 
 template<typename T>
@@ -76,22 +92,29 @@ inline void thread_pool<T>::stop_worker() {
 
 template<typename T>
 void thread_pool<T>::run() {
-    using model = ser_config::net_model;
     while (true) {
         std::unique_lock<std::mutex> locker(mutex_);
         while (request_queue_.empty() && !stop_) {
-            cv_.wait();
+            cv_.wait(locker);
         }
         if (stop_) {
             break;
         }
-        T* task = request_queue_.front();
+        T* request = request_queue_.front();
         request_queue_.pop_front();
         locker.unlock();
-        if (!task) continue;
-        if (model == 0) { // proactor
+        if (!request) continue;
+        if (ser_config::net_model == 1) { // reactor
+            auto ret = request->recv_data();
+            if (ret == true) {
+                // 读成功，开展业务逻辑
+                // request->process(); // 暂时就cout客户端请求，回应固定字符串
+                request->process();
+            }  else {
+                // 对方断开连接\recv失败，等待定时器超时清理对应客户端即可
+            }
 
-        } else { // reactor
+        } else { // proactor 
 
         }
     }

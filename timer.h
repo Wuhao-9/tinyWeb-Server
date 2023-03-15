@@ -3,7 +3,6 @@
 
 #include <chrono>
 
-class timer_list;
 class timer;
 
 struct client_data {
@@ -11,15 +10,17 @@ struct client_data {
     timer* user_timer;    
 };
 
+class timer_list;
 class timer {
     friend timer_list;
 public:
-    timer(std::time_t expire)
+    timer(const std::time_t expire)
         : expire_time_(expire)
         , prev_(nullptr)
         , next_(nullptr) {}
     static void timeout_cb(client_data*);
-    static const int epollFD;
+    static int epollFD;
+    void set_clientData(client_data* const p_data) { client_data_ = p_data; }
 private:
     client_data* client_data_;
     std::time_t expire_time_;

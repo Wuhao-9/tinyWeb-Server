@@ -1,4 +1,6 @@
 #include "timer.h"
+#include "http_conn.h"
+#include "web_server.h"
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <iostream>
@@ -24,6 +26,7 @@ void timer_list::add_timer(timer* new_timer) {
 }
 
 void timer_list::adjust_timer(timer* target) {
+    target->expire_time_ = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) + 3 * web_server::TIME_SLOT;
     if (!target) {
         std::cerr << "adjust null timer" << std::endl; 
         return;
@@ -119,8 +122,11 @@ void timer_list::add_timer(timer* new_timer, timer* list_head) {
     }
 }
 
-const int timer::epollFD = -1;
+int timer::epollFD = -1;
 
+// 从Epoll内核DataStruction移除当前fd
+// close当前fd
+// http_conn::count--
 void timer::timeout_cb(client_data* data) {
     if (data == nullptr) {
         std::cerr << "timeout callback func get a null parameter!" << std::endl;
@@ -128,4 +134,7 @@ void timer::timeout_cb(client_data* data) {
     epoll_ctl(timer::epollFD, EPOLL_CTL_DEL, data->fd, nullptr);
     close(data->fd);
     http_conn::user_count--;
+    std::clog << "In [timer::timeout_cb] fd " << data->fd << " timeout" << std::endl;
 }
+
+

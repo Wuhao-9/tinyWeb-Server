@@ -15,8 +15,8 @@ int ser_config::opt_linger = 0;
 int ser_config::sql_num = 8;
 int ser_config::thread_num = std::thread::hardware_concurrency();
 int ser_config::close_log = 0;
-//并发模型,默认是proactor
-int ser_config::net_model = 0; 
+//并发模型,默认是Reactor
+int ser_config::net_model = 1; 
 
 void ser_config::parse_arg(int argc, char* argv[]) {
     int opt;
