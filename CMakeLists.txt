@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.0)
 
 project(tiny-WebServer)
 
+set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR})
+
 file(GLOB SRCS "${CMAKE_SOURCE_DIR}/*.cpp")
 
 message(STATUS ${SRCS})

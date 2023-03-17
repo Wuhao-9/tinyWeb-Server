@@ -1,10 +1,32 @@
 #include "http_conn.h"
 #include "config.h"
+#include <sys/mman.h> // for mmap
+#include <fcntl.h> // for open
+#include <unistd.h> // for close
+#include <cassert>
 #include <cerrno>
 #include <iostream>
 #include <cstring>
 
 std::size_t http_conn::user_count = 0;
+
+// 资源文件路径
+static const char* register_page = "/register.html";
+static const char* log_page = "/log.html";
+static const char* picture_page = "/picture.html";
+static const char* video_page = "/video.html";
+static const char* follow_page = "/fans.html";
+
+//定义http响应的一些状态信息
+static const char *ok_200_title = "OK";
+static const char *error_400_title = "Bad Request";
+static const char *error_400_form = "Your request has bad syntax or is inherently impossible to staisfy.\n";
+static const char *error_403_title = "Forbidden";
+static const char *error_403_form = "You do not have permission to get file form this server.\n";
+static const char *error_404_title = "Not Found";
+static const char *error_404_form = "The requested file was not found on this server.\n";
+static const char *error_500_title = "Internal Error";
+static const char *error_500_form = "There was an unusual problem serving the request file.\n";
 
 bool http_conn::recv_data() {
     if (rd_buff_.read_idx_ >= RD_BUFFER_SIZE) {
@@ -37,9 +59,9 @@ bool http_conn::recv_data() {
     }
 }
 
-void http_conn::init(const int fd, const sockaddr_in& addr) {
+void http_conn::init(const int fd, const sockaddr_in& addr, const std::string& root) {
     ++user_count; // 更改当前用户数量
-
+    root_ = root;
     fd_ = fd;
     addr_ = addr;
 
@@ -47,17 +69,115 @@ void http_conn::init(const int fd, const sockaddr_in& addr) {
 }
 
 void http_conn::process() {
-    std::cout << rd_buff_.buff_;
     auto cur_http_code = prase_recvData();
     if (cur_http_code == NO_REQUEST) { // 若当前http状态码为NO_REQUEST，则请求不完整
-        // 解析
+        // 继续等待recv事件
     }
-    std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 11\r\n\r\nHello World";
-    auto transfered_bytes = ::send(fd_, response.c_str(), response.size(), 0);
-    if (transfered_bytes == -1) {
-        std::cerr << "send failure" << std::endl;
-        exit(0);
+    build_send_data(cur_http_code);
+    // 尝试直接发送：若缓冲区满，则注册写事件，等待可写事件通知再发送
+    if (!try_send()) {
+        // 在epoll中注册写事件
+    } else {
+        if (!requ_info_.linger_) { // 若为短连接，则关闭连接
+            // close conn...
+        }
     }
+}
+
+bool http_conn::try_send() {
+    std::cout << "-------------------------------------" << std::endl;
+    auto ret = writev(fd_, iov_, iov_count_);
+    if (ret == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { // 发送缓冲区已满，注册epoll写事件
+            return false;
+        } else {
+            std::cerr << "Unknow net error occurred: " << std::strerror(errno) << std::endl;
+            return false;
+        }
+    } else if (ret == send_total_bytes_) {
+        return true;
+    } else {
+        assert(false); // 一次性没有写完全部数据，暂时触发assert（后续做相应优化）
+    }
+}
+
+void http_conn::assemble_state_line(int code, const char* tittle) {
+    resp_ << "HTTP/1.1" << " " << code << " " << tittle << "\r\n";
+}
+
+void http_conn::assemble_reps_header(const std::size_t content_len) {
+    // Content-Type
+    // resp_ << "Content-Type: " << "text/plain" << "\r\n";
+    // Content-Length
+    resp_ << "Content-Length: " << content_len << "\r\n";
+    // Connection
+    resp_ << "Connection: " << (requ_info_.linger_ == true ? "keep-alive" : "close") << "\r\n";
+    // blank-line
+    resp_ << "\r\n";
+}
+
+void http_conn::assemble_content(const char* content) {
+    resp_ << content;
+}
+
+void http_conn::build_response(int code, const char* tittle, const std::size_t content_len, const char* content) {
+    assemble_state_line(code, tittle);
+    assemble_reps_header(content_len);
+    assemble_content(content);
+}
+
+void http_conn::build_response(int code, const char* tittle) { // 构建承载着template文件的响应报文
+    assemble_state_line(200, ok_200_title);
+    if (file_stat_.st_size != 0) {
+        assemble_reps_header(file_stat_.st_size);
+        message_ = resp_.str(); // 获取响应状态行和响应头部
+        resp_.str(""); // clear buffer
+        iov_[0].iov_base = const_cast<char*>(message_.c_str()); // 获取ostringstream中的数据
+        iov_[0].iov_len = message_.size();
+        iov_[1].iov_base = file_addr_;
+        iov_[1].iov_len = file_stat_.st_size;
+        iov_count_ = 2;
+        send_total_bytes_ = iov_[0].iov_len + iov_[1].iov_len;
+    } else {
+        const std::string empty_page = "<html><body></body></html>"; // 请求的目标文件没有数据，返回空页面
+        assemble_reps_header(empty_page.size());
+        assemble_content(empty_page.c_str());
+    }
+    return;
+}
+
+void http_conn::build_send_data(const HTTP_CODE requ_status) {
+    switch (requ_status) {
+    case INTERNAL_ERROR: {
+        build_response(500, error_500_title, std::strlen(error_500_form), error_500_form);
+        break;
+    }
+    case BAD_REQUEST: {
+        build_response(400, error_400_title, std::strlen(error_400_form), error_400_form);
+        break;
+    }
+    case FORBIDDEN_REQUEST: {
+        build_response(403, error_403_title, std::strlen(error_403_form), error_403_form);
+        break;
+    }
+    case NO_REQUEST: {
+        build_response(404, error_404_title, std::strlen(error_404_form), error_404_form);
+        break;
+    }
+    case FILE_REQUEST: {
+        build_response(200, ok_200_title);
+        return;
+    }
+    default: {
+        std::cerr << "[Unknow HTTP-CODE: " << requ_status << "]" << std::endl;
+        return;
+    }
+    };
+    iov_[0].iov_base = const_cast<char*>(resp_.str().c_str());
+    iov_[0].iov_len = std::strlen(static_cast<char*>(iov_[0].iov_base));
+    iov_count_ = 1;
+    send_total_bytes_ = iov_[0].iov_len;
+    return;
 }
 
 http_conn::HTTP_CODE http_conn::prase_recvData() {
@@ -100,7 +220,51 @@ http_conn::HTTP_CODE http_conn::prase_recvData() {
 }
 
 http_conn::HTTP_CODE http_conn::handle_request() {
-    return HTTP_CODE::GET_REQUEST;
+    requ_info_.file_path_ = root_;
+    const char which_page = requ_info_.url_[1];
+    if (requ_info_.method_ == POST && (which_page == '2' || which_page == '3')) { // 登录或注册操作
+        // 提取账号密码
+        // 若为登录op，判断信息是否匹配
+        // 若为注册op，则注册用户并判断是否注册成功
+    }
+    
+    // 获取目标文件的路径
+    if (which_page == '0') { // 请求注册用户页面
+        requ_info_.file_path_ += register_page;
+    } else if (which_page == '1') { // 请求登录页面
+        requ_info_.file_path_ += log_page;
+    } else if (which_page == '5') { // 请求照片页面
+        requ_info_.file_path_ += picture_page;
+    } else if (which_page == '6') { // 请求视频页面
+        requ_info_.file_path_ += video_page;
+    } else if (which_page == '7') { // 关注页面
+        requ_info_.file_path_ += follow_page;
+    } else { // 欢迎界面
+        requ_info_.file_path_ += requ_info_.url_;
+    }
+
+    auto ret = ::stat(requ_info_.file_path_.c_str(), &file_stat_);
+    if (ret != 0) {
+        return NO_RESOURCE;
+    } else {
+        if (!(file_stat_.st_mode & S_IROTH))
+            return FORBIDDEN_REQUEST;
+        if (S_ISDIR(file_stat_.st_mode))
+            return BAD_REQUEST;
+    }
+    
+    int target_file_fd = ::open(requ_info_.file_path_.c_str(), O_RDONLY);
+    if (target_file_fd == -1) {
+        return INTERNAL_ERROR;
+    }
+
+    file_addr_ = ::mmap(0, file_stat_.st_size, PROT_READ, MAP_PRIVATE, target_file_fd, 0);
+    if (!file_addr_) {
+        return INTERNAL_ERROR;
+    }
+
+    close(target_file_fd);
+    return FILE_REQUEST;
 }
 
 // 获取当前行首指针
@@ -216,4 +380,10 @@ void http_conn::init() {
     this->requ_info_ = {};
     cur_check_ = CHECK_REQUESTLINE;
     new_line_idx_ = 0;
+    file_stat_ = {};
+    file_addr_ = nullptr;
+    iov_count_ = 0;
+    send_total_bytes_ = 0;
+    
+    std::memset(iov_, 0, sizeof(iov_));
 }

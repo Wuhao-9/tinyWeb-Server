@@ -2,8 +2,11 @@
 #define HTTP_CONN_H_
 
 #include <arpa/inet.h>
+#include <sys/uio.h> // for writev, struct iovec
+#include <sys/stat.h>
 #include <cstdlib>
 #include <string>
+#include <sstream>
 
 class http_conn {
 public:
@@ -50,9 +53,13 @@ public:
     http_conn() = default;
     bool recv_data();
     void init();
-    void init(const int fd, const sockaddr_in& addr);
+    void init(const int fd, const sockaddr_in& addr, const std::string& root);
     void setStatus(const char s) { if (s == 0 || s == 1) status_ = s; }
     void process();
+
+
+
+
 
 private:
     http_conn::HTTP_CODE prase_recvData();
@@ -62,6 +69,14 @@ private:
     HTTP_CODE parse_request_line(const std::string& text);
     HTTP_CODE parse_request_header(const std::string& text);
     HTTP_CODE parse_request_content(const std::string& text);
+    void build_send_data(const HTTP_CODE requ_status);
+    void build_response(int code, const char* tittle, const std::size_t content_len, const char* content);
+    void build_response(int code, const char* tittle);
+    inline void assemble_state_line(int code, const char* tittle);
+    inline void assemble_reps_header(const std::size_t content_len);
+    inline void assemble_content(const char* content);
+    bool try_send();
+
 private:
     int fd_;
     char status_; // read: 0, write: 1
@@ -78,10 +93,12 @@ private:
     } wr_buff_;
 
     // 解析http-request相关
+    std::string root_; // 资源文件根目录
     CHECK_STATE cur_check_; // 主状态机解析进度
     int new_line_idx_; // 新一行的开始下标
     // request-info相关
     struct {
+        std::string file_path_;
         std::string url_;
         METHOD method_;
         std::string version_;
@@ -90,6 +107,14 @@ private:
         std::size_t content_len_;
         bool linger_;
     } requ_info_;
+    // response-info相关
+    struct stat file_stat_;
+    void* file_addr_; // 目标文件的mmap地址
+    std::ostringstream resp_;
+    struct iovec iov_[2];
+    unsigned iov_count_;
+    std::size_t send_total_bytes_;
+    std::string message_;
 };
 
 #endif // HTTP_CONN_H_

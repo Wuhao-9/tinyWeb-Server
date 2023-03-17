@@ -29,7 +29,7 @@ web_server::web_server()
         std::cerr << "getcwd() failuer" << std::endl;
         ::exit(EXIT_FAILURE);
     }
-    resource_root_ += std::string(work_dir, std::strlen(work_dir));
+    resource_root_ += std::string(work_dir, std::strlen(work_dir)) += "/root";
 
     create_epoll_instance();
     start_listen();
@@ -99,7 +99,7 @@ void web_server::init_signal() {
     signal_handler::register_sig(SIGALRM, signal_handler::sig_callback, false);
     signal_handler::register_sig(SIGTERM, signal_handler::sig_callback, false);
     
-    ::alarm(TIME_SLOT); // 启动定时器
+    // ::alarm(TIME_SLOT); // 启动定时器
 }
 
 void web_server::create_thread_pool() {
@@ -126,7 +126,7 @@ void web_server::handle_newCoon() {
             return;
         }
         
-        users_[client_fd].init(client_fd, client_addr); // 初始化该客户端对应的http_conn对象
+        users_[client_fd].init(client_fd, client_addr, resource_root_); // 初始化该客户端对应的http_conn对象
         if (ser_config::conn_trigger == 0) { // 注册epoll事件
             utility::register_event(epollFD_, client_fd, true, 0);
         } else {
