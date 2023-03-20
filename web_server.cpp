@@ -6,6 +6,8 @@
 #include "timer.h"
 #include "utility.h"
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <cstring>
 #include <cassert>
@@ -82,6 +84,7 @@ void web_server::create_epoll_instance() {
         exit(EXIT_FAILURE);
     }
     timer::epollFD = epollFD_;
+    http_conn::init_epollFD(epollFD_);
 }
 
 void web_server::init_signal() {
@@ -99,7 +102,7 @@ void web_server::init_signal() {
     signal_handler::register_sig(SIGALRM, signal_handler::sig_callback, false);
     signal_handler::register_sig(SIGTERM, signal_handler::sig_callback, false);
     
-    // ::alarm(TIME_SLOT); // 启动定时器
+    ::alarm(TIME_SLOT); // 启动定时器
 }
 
 void web_server::create_thread_pool() {
@@ -208,21 +211,24 @@ void web_server::handle_write(int fd) {
 void web_server::eventLoop() {
     bool timeout = false;
     bool terminated = false;
-
+    static int count = 0;
     ::epoll_event ready_event[MAX_EVENTS];
     while (!terminated) {
         int num = ::epoll_wait(epollFD_, ready_event, MAX_EVENTS, -1);
         if (num == -1 && (errno != EINTR)) {
             std::cerr << "epoll_wait failure!" << std::endl;
             break;
-        }
-        
+        } else if (num == -1 && errno == EINTR)
+            continue;
+        printf("{%d} epoll wait wakeUp", ++count);
         for (int i = 0; i < num; i++) {
             int sock_fd = ready_event[i].data.fd;
             if (sock_fd == listenFD_) {
                 handle_newCoon();
+                std::cout << "--[new connection]" << std::endl;
             } else if (ready_event[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                 handle_client_exit(sock_fd);
+                std::cout << "--[user exit]" << std::endl;
             } else if (sock_fd == pipeFD_[0] && ready_event[i].events & EPOLLIN) {
                 // 每隔5秒会产生alarm信号，其handler会向管道写入SIGALRM
                 // 主线监听管道读端，若读端有数据且为SIGALARM,则将timeout标志置为true
@@ -232,8 +238,10 @@ void web_server::eventLoop() {
                     std::cerr << "read pipe failure" << std::endl;
                 }
             } else if (ready_event[i].events & EPOLLIN) {
+                std::cout << "--[new recv]" << std::endl;
                 handle_recv(sock_fd);
             } else if (ready_event[i].events & EPOLLOUT) {
+                std::cout << "--[new write]" << std::endl;
                 handle_write(sock_fd);
             }
         }

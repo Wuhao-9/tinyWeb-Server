@@ -110,7 +110,7 @@ void thread_pool<T>::run() {
                 // 读成功，开展业务逻辑
                 // request->process(); // 暂时就cout客户端请求，回应固定字符串
                 request->process();
-            }  else {
+            } else {
                 // 对方断开连接\recv失败，等待定时器超时清理对应客户端即可
             }
 

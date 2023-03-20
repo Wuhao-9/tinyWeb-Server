@@ -1,6 +1,7 @@
 #if !defined(HTTP_CONN_H_)
 #define HTTP_CONN_H_
 
+#include "epoll_info.hpp"
 #include <arpa/inet.h>
 #include <sys/uio.h> // for writev, struct iovec
 #include <sys/stat.h>
@@ -8,7 +9,7 @@
 #include <string>
 #include <sstream>
 
-class http_conn {
+class http_conn : public epoll_info<http_conn>{
 public:
     const static std::size_t RD_BUFFER_SIZE = 1024 * 3;
     const static std::size_t WR_BUFFER_SIZE = 1024 * 3;
@@ -50,7 +51,7 @@ public:
     };
 
 public:
-    http_conn() = default;
+    http_conn();
     bool recv_data();
     void init();
     void init(const int fd, const sockaddr_in& addr, const std::string& root);
@@ -88,10 +89,6 @@ private:
         int check_idx_;
     } rd_buff_;
 
-    struct {
-        char buff_[RD_BUFFER_SIZE];
-    } wr_buff_;
-
     // 解析http-request相关
     std::string root_; // 资源文件根目录
     CHECK_STATE cur_check_; // 主状态机解析进度
@@ -100,12 +97,12 @@ private:
     struct {
         std::string file_path_;
         std::string url_;
-        METHOD method_;
         std::string version_;
         std::string host_;
         std::string content_;
         std::size_t content_len_;
         bool linger_;
+        METHOD method_;
     } requ_info_;
     // response-info相关
     struct stat file_stat_;

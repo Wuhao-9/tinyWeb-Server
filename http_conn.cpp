@@ -1,5 +1,7 @@
 #include "http_conn.h"
+#include "utility.h"
 #include "config.h"
+#include <sys/epoll.h>
 #include <sys/mman.h> // for mmap
 #include <fcntl.h> // for open
 #include <unistd.h> // for close
@@ -27,6 +29,8 @@ static const char *error_404_title = "Not Found";
 static const char *error_404_form = "The requested file was not found on this server.\n";
 static const char *error_500_title = "Internal Error";
 static const char *error_500_form = "There was an unusual problem serving the request file.\n";
+
+http_conn::http_conn() = default;
 
 bool http_conn::recv_data() {
     if (rd_buff_.read_idx_ >= RD_BUFFER_SIZE) {
@@ -72,20 +76,30 @@ void http_conn::process() {
     auto cur_http_code = prase_recvData();
     if (cur_http_code == NO_REQUEST) { // 若当前http状态码为NO_REQUEST，则请求不完整
         // 继续等待recv事件
+        utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);
     }
     build_send_data(cur_http_code);
     // 尝试直接发送：若缓冲区满，则注册写事件，等待可写事件通知再发送
     if (!try_send()) {
         // 在epoll中注册写事件
+        utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLOUT, ser_config::conn_trigger);
     } else {
         if (!requ_info_.linger_) { // 若为短连接，则关闭连接
-            // close conn...
+        // TODO：此处只是简单的关闭了文件描述符等相关操作
+        //       并没有移除定时器，释放定时器相关资源
+        //        应该重构统计客户与定时器相关代码，尽量做到低耦合
+            utility::remove_event(http_conn::get_epollFD(), fd_);
+            http_conn::user_count--;
+            close(fd_);
+            return;
+        } else { // 负责继续等待读事件就绪
+            utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);    
+            init();
         }
     }
 }
 
 bool http_conn::try_send() {
-    std::cout << "-------------------------------------" << std::endl;
     auto ret = writev(fd_, iov_, iov_count_);
     if (ret == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) { // 发送缓冲区已满，注册epoll写事件
@@ -107,7 +121,7 @@ void http_conn::assemble_state_line(int code, const char* tittle) {
 
 void http_conn::assemble_reps_header(const std::size_t content_len) {
     // Content-Type
-    // resp_ << "Content-Type: " << "text/plain" << "\r\n";
+    // resp_ << "Content-Type: " << "text/html" << "\r\n";
     // Content-Length
     resp_ << "Content-Length: " << content_len << "\r\n";
     // Connection
@@ -188,7 +202,7 @@ http_conn::HTTP_CODE http_conn::prase_recvData() {
     while ((cur_check_ == CHECK_CONTENT && line_status == LINE_OK) || (line_status = parse_one_line()) == LINE_OK) {
         text = get_line();
         new_line_idx_ = rd_buff_.check_idx_; // 更新至新一行的起始位置
-        std::clog << "[new line]: " << text << std::endl;
+        // std::clog << "[new line]: " << text << std::endl;
         switch (cur_check_) {
         case CHECK_REQUESTLINE:
         {
@@ -359,7 +373,7 @@ http_conn::HTTP_CODE http_conn::parse_request_header(const std::string& text) {
     } else if (text.compare(0, 5, "Host:") == 0) {
         requ_info_.host_ = text.substr(6);
     } else {
-        std::clog << "<Unknow header info>: " << text << std::endl;
+        // std::clog << "<Unknow header info>: " << text << std::endl;
     }
     return NO_REQUEST;
 }
@@ -376,7 +390,6 @@ http_conn::HTTP_CODE http_conn::parse_request_content(const std::string& text) {
 void http_conn::init() {
     status_ = -1;
     this->rd_buff_ = {};
-    this->wr_buff_ = {};
     this->requ_info_ = {};
     cur_check_ = CHECK_REQUESTLINE;
     new_line_idx_ = 0;
