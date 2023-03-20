@@ -6,8 +6,6 @@
 #include "timer.h"
 #include "utility.h"
 #include <arpa/inet.h>
-#include <fcntl.h>
-#include <sys/resource.h>
 #include <unistd.h>
 #include <cstring>
 #include <cassert>
