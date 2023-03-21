@@ -1,3 +1,4 @@
+#include "web_server.h"
 #include "http_conn.h"
 #include "utility.h"
 #include "config.h"
@@ -10,7 +11,7 @@
 #include <iostream>
 #include <cstring>
 
-std::size_t http_conn::user_count = 0;
+std::atomic<std::size_t> http_conn::user_count(0);
 
 // 资源文件路径
 static const char* register_page = "/register.html";
@@ -30,7 +31,8 @@ static const char *error_404_form = "The requested file was not found on this se
 static const char *error_500_title = "Internal Error";
 static const char *error_500_form = "There was an unusual problem serving the request file.\n";
 
-http_conn::http_conn() = default;
+http_conn::http_conn(web_server& context)
+    : context_(context) {}
 
 bool http_conn::recv_data() {
     if (rd_buff_.read_idx_ >= RD_BUFFER_SIZE) {
@@ -88,10 +90,7 @@ void http_conn::process() {
         // TODO：此处只是简单的关闭了文件描述符等相关操作
         //       并没有移除定时器，释放定时器相关资源
         //        应该重构统计客户与定时器相关代码，尽量做到低耦合
-            utility::remove_event(http_conn::get_epollFD(), fd_);
-            http_conn::user_count--;
-            close(fd_);
-            return;
+        context_.handle_client_exit(fd_);
         } else { // 负责继续等待读事件就绪
             utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);    
             init();

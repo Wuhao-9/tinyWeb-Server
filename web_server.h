@@ -1,19 +1,19 @@
 #if !defined(WEB_SERVER_H_)
 #define WEB_SERVER_H_
 
+#include "timer.h"
 #include <iostream>
-template <typename T>
-class thread_pool; // forward declaration
 
-class http_conn;   // forward declaration
-class client_data; // forward declaration
-class timer_list;  // forward declaration
-class utility;     // forward declaration
+template <typename T>
+class thread_pool;          // forward declaration
+class http_conn;            // forward declaration
+
 class web_server {
 public:
     const static time_t TIME_SLOT = 5;
     web_server();
     void start() { eventLoop(); }
+    void handle_client_exit(int client_fd);
 private:
     const static int MAX_CONN_FD = 4000; 
     const static int MAX_EVENTS = 500;
@@ -23,8 +23,7 @@ private:
     void init_signal();
     void create_thread_pool();
     void handle_newCoon();
-    void create_timer(int fd);
-    void handle_client_exit(int client_fd);
+    void create_timer(http_conn* conn);
     void handle_recv(int fd);
     void handle_write(int fd);
     bool handle_signal(bool* const timeout, bool* const terminated);
@@ -36,9 +35,9 @@ private:
     int listenFD_;    
     
     http_conn* users_;
-    client_data* timers_;
-    timer_list* timer_list_;
     thread_pool<http_conn>* pool_;
+    SortTimerList::timer* timers_;
+    SortTimerList* timerList_;
 };
 
 #endif // WEB_SERVER_H_

@@ -1,140 +1,83 @@
 #include "timer.h"
 #include "http_conn.h"
-#include "web_server.h"
-#include <sys/epoll.h>
-#include <unistd.h>
+#include "utility.h"
+#include <chrono>
+#include <functional>
+#include <cassert>
 #include <iostream>
+#include <thread>
+#include <unistd.h>
 
-void timer_list::add_timer(timer* new_timer) {
-    if (!new_timer) {
-        std::cerr << "null timer" << std::endl;
-    }
-
-    if (!head_) { // 没有head，做头结点
-        head_ = tail_ = new_timer;
-        return;
-    }
-
-    if (new_timer->expire_time_ < head_->expire_time_) { // 比头结点小，做头结点
-        new_timer->next_ = head_;
-        head_->prev_ = new_timer;
-        head_ = new_timer;
-        return;
-    }
-
-    add_timer(new_timer, head_); // 当前定时器不能做头结点
-}
-
-void timer_list::adjust_timer(timer* target) {
-    target->expire_time_ = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) + 3 * web_server::TIME_SLOT;
-    if (!target) {
-        std::cerr << "adjust null timer" << std::endl; 
-        return;
-    }
-
-    timer* tmp = target->next_;
-    // 如果已经是链表中的尾节点，或定时器更新后的时间依然小于其next，则无需移动，直接return
-    if (!tmp || (target->expire_time_ < tmp->expire_time_)) {
-        return;
-    }
-
-    // 如果更新的是链表头节点，且需要移动。则让出头结点位置
-    if (target == head_) {
-        head_ = target->next_;
-        head_->prev_ = nullptr;
-        target->next_ = nullptr;
-        target->prev_ = nullptr;
-        add_timer(target, head_);
-    } else {
-        target->prev_->next_ = target->next_;
-        target->next_->prev_ = target->prev_;
-        auto bound = target->next_; // 因为target->next的超时时间小于target的超时时间
-        target->prev_ = nullptr;
-        target->next_ = nullptr;
-        add_timer(target, bound); // 故从bound开始向后判断其插入的位置即可
-    }
-}
-
-void timer_list::remove_timer(timer* target) {
-    if (!target) {
-        std::cerr << "remove null timer" << std::endl; 
-        return;
-    }
-    if ((target == head_) && (target == tail_)) {
-        delete target;
-        head_ = nullptr;
-        tail_ = nullptr;
-        return;
-    }
-    if (target == head_) {
-        head_ = head_->next_;
-        head_->prev_ = nullptr;
-        delete target;
-        return;
-    } else if (target == tail_) {
-        tail_ = tail_->prev_;
-        tail_->next_ = nullptr;
-        delete target;
-        return;
-    }
-
-    target->prev_->next_ = target->next_;
-    target->next_->prev_ = target->prev_;
-    delete target;
-}
-
-void timer_list::check_timeout() {
-    if (!head_) { return; } // 当前没有定时器(即没有用户连接)
-    
-    time_t cur = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()); 
-    timer* tmp = head_;
-    while (tmp) {
-        if (cur < tmp->expire_time_) {
-            break;
-        }
-        head_ = tmp->next_;
-        timer::timeout_cb(tmp->client_data_);
-        if (head_) {
-            head_->prev_ = nullptr;
-        }
-        delete tmp;
-        tmp = head_;
-    }
-}
-
-void timer_list::add_timer(timer* new_timer, timer* list_head) {
-    timer* tmp = list_head->next_;
-    while (tmp) {
-        if (new_timer->expire_time_ < tmp->expire_time_) {
-            list_head->next_ = new_timer;
-            new_timer->next_ = tmp;
-            new_timer->prev_ = list_head;
-            tmp->prev_ = new_timer;
-            return;
-        }
-        list_head = tmp;
-        tmp = tmp->next_;
-    }
-    if (!tmp) {
-        list_head->next_ = new_timer;
-        new_timer->prev_ = list_head;
-        tail_ = new_timer;
-    }
-}
-
-int timer::epollFD = -1;
-
-// 从Epoll内核DataStruction移除当前fd
-// close当前fd
-// http_conn::count--
-void timer::timeout_cb(client_data* data) {
-    if (data == nullptr) {
-        std::cerr << "timeout callback func get a null parameter!" << std::endl;
-    }
-    epoll_ctl(timer::epollFD, EPOLL_CTL_DEL, data->fd, nullptr);
-    close(data->fd);
+void SortTimerList::timer::handle_timeout_conn(timer* t) {
+    utility::remove_event(t->conn_->get_epollFD(), t->conn_->getFD());
+    close(t->conn_->getFD());
     http_conn::user_count--;
-    std::clog << "In [timer::timeout_cb] fd " << data->fd << " timeout" << std::endl;
 }
 
+SortTimerList::timer::timer(http_conn* conn, const std::time_t expire, std::function<void(timer*)> cb, timer* next)
+    : conn_(conn)
+    , expire_time_(expire)
+    , cb_(cb)
+    , next_(next) {}
 
+SortTimerList::timer::timer() 
+    : conn_(nullptr)
+    , expire_time_(0)
+    , cb_(nullptr)
+    , next_(nullptr) {}
+
+SortTimerList::SortTimerList() : dummyHead_(new timer(nullptr, -1, nullptr, nullptr)) {}
+
+void SortTimerList::insert_timer(timer* const t) {
+    timer* cur = dummyHead_; 
+    while (cur->next_ && cur->next_->expire_time_ < t->expire_time_) {
+        cur = cur->next_;
+    }
+    timer* tmp = cur->next_;
+    cur->next_ = t;
+    t->next_ = tmp;
+}
+
+bool SortTimerList::delete_timer(timer* const t) {
+    timer* cur = dummyHead_;
+    while (cur->next_ != nullptr) {
+        if (cur->next_ == t) {
+            timer* tmp = cur->next_;
+            cur->next_ = tmp->next_;
+            tmp->cb_(tmp);
+            // delete tmp;
+            return true;
+        } else {
+            cur = cur->next_;
+        }
+    }
+    return false;
+}
+
+void SortTimerList::tick() {
+    using namespace std::chrono;
+
+    timer* cur = dummyHead_;
+    auto now = system_clock::to_time_t(system_clock::now()); // 获取当前时间
+    while (cur->next_ != nullptr && cur->next_->expire_time_ <= now) {
+        timer* tmp = cur->next_;
+        cur->next_ = tmp->next_;
+        tmp->cb_(tmp);
+        // delete tmp;
+    }
+}
+
+void SortTimerList::update_timer(timer* const t, const time_t new_expire) {
+    timer* cur = dummyHead_;
+    while (cur->next_ != nullptr && cur->next_ != t) {
+        cur = cur->next_;
+    }
+    if (cur) {
+        cur->next_ = t->next_;
+        t->expire_time_ = new_expire;
+        insert_timer(t);
+    } else {
+        // std::cerr << "no target timer in sortList" << std::endl;
+        assert(false);
+    }
+}

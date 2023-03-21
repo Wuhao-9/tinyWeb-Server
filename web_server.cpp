@@ -6,6 +6,7 @@
 #include "timer.h"
 #include "utility.h"
 #include <arpa/inet.h>
+#include <array>
 #include <unistd.h>
 #include <cstring>
 #include <cassert>
@@ -13,12 +14,15 @@
 #include <sys/epoll.h>
 
 web_server::web_server()
-    : timer_list_(new timer_list)
-    // : util_(new utility)
+    : timerList_(new SortTimerList)
 {
     try {
-        users_ = new http_conn[MAX_CONN_FD];
-        timers_ = new client_data[MAX_CONN_FD];
+        // users_ = new http_conn(*this)[MAX_CONN_FD]; // error
+        users_ = static_cast<http_conn*>(::operator new[](sizeof(http_conn) * MAX_CONN_FD));
+        for (int i = 0; i < MAX_CONN_FD; i++) {
+            new (users_ + i) http_conn(*this);
+        }
+        timers_ = new SortTimerList::timer[MAX_CONN_FD];
     } catch (std::bad_alloc& err) {
         std::cerr << "users-array memory allocate failed" << std::endl;
         throw;
@@ -81,7 +85,6 @@ void web_server::create_epoll_instance() {
         std::cerr << "failed to create epoll instance" << std::endl;
         exit(EXIT_FAILURE);
     }
-    timer::epollFD = epollFD_;
     http_conn::init_epollFD(epollFD_);
 }
 
@@ -121,7 +124,7 @@ void web_server::handle_newCoon() {
         if (client_fd == -1) {
             std::cerr << "accept new client failure!" << std::endl;
             return;
-        } else if (http_conn::user_count >= MAX_CONN_FD) {
+        } else if (http_conn::user_count + 7 >= MAX_CONN_FD) {
             show_error(client_fd, "Internal server busy");
             std::cerr << "Internal server busy!" << std::endl;
             return;
@@ -133,35 +136,27 @@ void web_server::handle_newCoon() {
         } else {
             utility::register_event(epollFD_, client_fd, true, 1);
         }
-        create_timer(client_fd); // 初始化新连接的定时器
+        create_timer(users_ + client_fd); // 初始化新连接的定时器
     }
 
 }
-void web_server::create_timer(int fd) {
-    timers_[fd].fd = fd;
-    timer* tmp = new (std::nothrow) timer(TIME_SLOT * 3 + std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
-    if (tmp == nullptr) {
-        std::cerr << "create timer failure!" << std::endl;
-        show_error(fd, "internal server occurred error");
-        return;
-    }
-    timers_[fd].user_timer = tmp;
-    tmp->set_clientData(timers_ + fd);
-    timer_list_->add_timer(tmp);
+void web_server::create_timer(http_conn* conn) {
+    timers_[conn->getFD()].conn_ = conn;
+    timers_[conn->getFD()].expire_time_ = TIME_SLOT * 3 + std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    timers_[conn->getFD()].next_ = nullptr;
+    timers_[conn->getFD()].cb_ = SortTimerList::timer::handle_timeout_conn;
+    timerList_->insert_timer(timers_ + conn->getFD()); // 加入定时器链表
 }
 
 void web_server::handle_client_exit(int client_fd) {
-    timer::timeout_cb(&timers_[client_fd]);
-    timer* cur_user_timer = timers_[client_fd].user_timer;
-    timer_list_->remove_timer(cur_user_timer);
+    bool ret = timerList_->delete_timer(timers_ + client_fd);
+    assert(ret == true);
     std::clog << "In [web_server::handle_client_exit] close fd: " << client_fd << std::endl;
 }
 
 void web_server::handle_recv(int fd) {
     if (ser_config::net_model == 1) { // reactor
-        timer* cur_timer = timers_[fd].user_timer;
-        assert(cur_timer != nullptr);
-        timer_list_->adjust_timer(cur_timer); // 更新计数器时间
+        timerList_->update_timer(timers_ + fd, TIME_SLOT * 3 + std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())); // 更新计数器时间
         pool_->enqueue(users_ + fd, 0);
     } else { // proactor
         // .....
@@ -196,9 +191,7 @@ bool web_server::handle_signal(bool* const timeout, bool* const terminated) {
 
 void web_server::handle_write(int fd) {
     if (ser_config::net_model == 1) { // reactor
-        timer* cur_timer = timers_[fd].user_timer;
-        assert(cur_timer != nullptr);
-        timer_list_->adjust_timer(cur_timer); // 更新计数器时间
+        timerList_->update_timer(timers_ + fd, TIME_SLOT * 3 + std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())); // 更新计数器时间
         pool_->enqueue(users_ + fd, 1);
 
     } else { // proactor
@@ -245,7 +238,7 @@ void web_server::eventLoop() {
         }
 
         if (timeout) { // 等到所有事件都被dispatch过后，再进行清理失效的定时器(如果存在的话)
-            timer_list_->check_timeout();
+            timerList_->tick();
             alarm(TIME_SLOT);
             timeout = false;
         }

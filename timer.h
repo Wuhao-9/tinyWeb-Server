@@ -2,44 +2,36 @@
 #define TIMER_H_
 
 #include <chrono>
-
-class timer;
-
-struct client_data {
-    int fd;
-    timer* user_timer;    
-};
-
-class timer_list;
-class timer {
-    friend timer_list;
+#include <functional>
+class http_conn;
+// 升序链表
+class SortTimerList {
 public:
-    timer(const std::time_t expire)
-        : expire_time_(expire)
-        , prev_(nullptr)
-        , next_(nullptr) {}
-    static void timeout_cb(client_data*);
-    static int epollFD;
-    void set_clientData(client_data* const p_data) { client_data_ = p_data; }
-private:
-    client_data* client_data_;
-    std::time_t expire_time_;
-    timer* prev_;
-    timer* next_;
-};
+    
+    class timer {
+    public:
+        static void handle_timeout_conn(timer* t);
 
-// ordered-list
-class timer_list {
-public:
-    void add_timer(timer* new_timer);
-    void adjust_timer(timer* target);
-    void remove_timer(timer* target);
-    void check_timeout();
+    public:
+        explicit timer(http_conn* conn, const std::time_t expire, std::function<void(timer*)> cb, timer* next = nullptr);
+
+        explicit timer();
+            
+    public:
+        std::function<void(timer*)> cb_;
+        http_conn* conn_;
+        std::time_t expire_time_;
+        timer* next_;
+    };
+
+    SortTimerList();
+    SortTimerList(const SortTimerList&) = delete;
+    void insert_timer(timer* const t);
+    bool delete_timer(timer* const t);
+    void update_timer(timer* const t, const time_t new_expire);
+    void tick();
 private:
-    void add_timer(timer* new_timer, timer* list_head);
-private:
-    timer* head_ = nullptr;
-    timer* tail_ = nullptr;
+    timer* const dummyHead_;
 };
 
 #endif // TIMER_H_

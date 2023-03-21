@@ -6,14 +6,16 @@
 #include <sys/uio.h> // for writev, struct iovec
 #include <sys/stat.h>
 #include <cstdlib>
-#include <string>
 #include <sstream>
+#include <string>
+#include <atomic>
+
+class web_server; // forward declaration
 
 class http_conn : public epoll_info<http_conn>{
 public:
     const static std::size_t RD_BUFFER_SIZE = 1024 * 3;
-    const static std::size_t WR_BUFFER_SIZE = 1024 * 3;
-    static std::size_t user_count; 
+    static std::atomic<std::size_t> user_count; 
 
     enum METHOD {
         GET = 1,
@@ -47,20 +49,18 @@ public:
     enum LINE_STATUS {
         LINE_OK = 0,
         LINE_BAD,   // 当前行信息格式错误
-        LINE_OPEN   // 当前行不完整
+        LINE_OPEN   
+// 当前行不完整
     };
 
 public:
-    http_conn();
+    http_conn(web_server& context);
     bool recv_data();
     void init();
     void init(const int fd, const sockaddr_in& addr, const std::string& root);
     void setStatus(const char s) { if (s == 0 || s == 1) status_ = s; }
     void process();
-
-
-
-
+    const int getFD() { return fd_; }
 
 private:
     http_conn::HTTP_CODE prase_recvData();
@@ -79,6 +79,7 @@ private:
     bool try_send();
 
 private:
+    web_server& context_;
     int fd_;
     char status_; // read: 0, write: 1
     sockaddr_in addr_;
