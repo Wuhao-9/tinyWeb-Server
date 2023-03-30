@@ -100,8 +100,8 @@ void web_server::init_signal() {
     utility::set_NoBlock(pipeFD_[1]);
     utility::register_event(epollFD_, pipeFD_[0], false, 0);
     signal_handler::register_sig(SIGPIPE, SIG_DFL, true); // 若管道读端关闭，再向管道写数据，则会产生SIGPIPE信号, 默认abort
-    signal_handler::register_sig(SIGALRM, signal_handler::sig_callback, false);
-    signal_handler::register_sig(SIGTERM, signal_handler::sig_callback, false);
+    signal_handler::register_sig(SIGALRM, signal_handler::sig_callback, true);
+    signal_handler::register_sig(SIGTERM, signal_handler::sig_callback, true);
     
     ::alarm(TIME_SLOT); // 启动定时器
 }
@@ -120,15 +120,16 @@ void web_server::handle_newCoon() {
     ::socklen_t addr_len = sizeof(client_addr);
     if (ser_config::listen_trigger == 0) {
         int client_fd = ::accept(listenFD_, (sockaddr*)&client_addr, &addr_len);
-        utility::set_NoBlock(client_fd); // 设置nonblocking；在linux下，也可以将listen-fd设为非阻塞，其accept的客户端fd默认为非阻塞状态
         if (client_fd == -1) {
-            std::cerr << "accept new client failure!" << std::endl;
+            std::cerr << "accept new client failure: " << std::strerror(errno) << std::endl;
+            // assert(false);
             return;
-        } else if (http_conn::user_count + 7 >= MAX_CONN_FD) {
+        } else if (http_conn::user_count >= MAX_CONN_FD - 7) {
             show_error(client_fd, "Internal server busy");
             std::cerr << "Internal server busy!" << std::endl;
             return;
         }
+        utility::set_NoBlock(client_fd); // 设置nonblocking；在linux下，也可以将listen-fd设为非阻塞，其accept的客户端fd默认为非阻塞状态
         
         users_[client_fd].init(client_fd, client_addr, resource_root_); // 初始化该客户端对应的http_conn对象
         if (ser_config::conn_trigger == 0) { // 注册epoll事件
@@ -218,12 +219,13 @@ void web_server::eventLoop() {
                 handle_newCoon();
                 std::cout << "--[new connection]" << std::endl;
             } else if (ready_event[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-                handle_client_exit(sock_fd);
                 std::cout << "--[user exit]" << std::endl;
+                handle_client_exit(sock_fd);
             } else if (sock_fd == pipeFD_[0] && ready_event[i].events & EPOLLIN) {
                 // 每隔5秒会产生alarm信号，其handler会向管道写入SIGALRM
                 // 主线监听管道读端，若读端有数据且为SIGALARM,则将timeout标志置为true
                 // 当timeout为true时，定时器链表会遍历其elem，若有定时器超时，则将会清除该用户的相关资源
+                std::cout << "--[handle signal]" << std::endl;
                 bool flag = handle_signal(&timeout, &terminated);
                 if (!flag) {
                     std::cerr << "read pipe failure" << std::endl;

@@ -1,5 +1,8 @@
 #include "utility.h"
 #include "config.h"
+#include <cerrno>
+#include <cstring>
+#include <iostream>
 #include <sys/epoll.h>
 #include <fcntl.h>
 #include <cassert>
@@ -39,8 +42,11 @@ void utility::remove_event(int epoll_instance, int fd) {
     assert(epoll_ctl(epoll_instance, EPOLL_CTL_DEL, fd, nullptr) != -1);
 }
 
-void utility::set_NoBlock(int fd) {
+void utility::set_NoBlock(const int fd) {
     int old_flag = ::fcntl(fd, F_GETFL);
     auto ret = ::fcntl(fd, F_SETFL, old_flag | O_NONBLOCK);
-    assert(ret != -1);
+    if (ret == -1) {
+        std::cerr << "set_NoBlock: " << std::strerror(errno) << std::endl;
+        assert(ret != -1);
+    }
 }
