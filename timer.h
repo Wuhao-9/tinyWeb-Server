@@ -3,6 +3,8 @@
 
 #include <chrono>
 #include <functional>
+#include <mutex>
+
 class http_conn;
 // 升序链表
 class SortTimerList {
@@ -32,6 +34,7 @@ public:
     void tick();
 private:
     timer* const dummyHead_;
+    std::mutex mutex_;
 };
 
 #endif // TIMER_H_

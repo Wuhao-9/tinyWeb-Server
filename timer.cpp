@@ -29,6 +29,7 @@ SortTimerList::timer::timer()
 SortTimerList::SortTimerList() : dummyHead_(new timer(nullptr, -1, nullptr, nullptr)) {}
 
 void SortTimerList::insert_timer(timer* const t) {
+    std::lock_guard<std::mutex> lock(mutex_);
     timer* cur = dummyHead_; 
     while (cur->next_ && cur->next_->expire_time_ < t->expire_time_) {
         cur = cur->next_;
@@ -39,6 +40,7 @@ void SortTimerList::insert_timer(timer* const t) {
 }
 
 bool SortTimerList::delete_timer(timer* const t) {
+    std::lock_guard<std::mutex> lock(mutex_);
     timer* cur = dummyHead_;
     while (cur->next_ != nullptr) {
         if (cur->next_ == t) {
@@ -57,6 +59,7 @@ bool SortTimerList::delete_timer(timer* const t) {
 void SortTimerList::tick() {
     using namespace std::chrono;
 
+    std::lock_guard<std::mutex> lock(mutex_);
     timer* cur = dummyHead_;
     auto now = system_clock::to_time_t(system_clock::now()); // 获取当前时间
     while (cur->next_ != nullptr && cur->next_->expire_time_ <= now) {
@@ -68,14 +71,27 @@ void SortTimerList::tick() {
 }
 
 void SortTimerList::update_timer(timer* const t, const time_t new_expire) {
+    std::unique_lock<std::mutex> lock(mutex_);
     timer* cur = dummyHead_;
     while (cur->next_ != nullptr && cur->next_ != t) {
         cur = cur->next_;
     }
     if (cur) {
+        // 从原位置取出定时器
         cur->next_ = t->next_;
         t->expire_time_ = new_expire;
-        insert_timer(t);
+        t->next_ = nullptr; // 防止出现环路
+        // lock.unlock();
+        // insert_timer(t);
+
+        // 搜索合适位置插入定时器
+        timer* f = dummyHead_;
+        while (f->next_ != nullptr && f->next_->expire_time_ < t->expire_time_) {
+            f = f->next_;
+        }
+        timer* tmp  = f->next_;
+        f->next_ = t;
+        t->next_ = tmp;
     } else {
         // std::cerr << "no target timer in sortList" << std::endl;
         assert(false);
