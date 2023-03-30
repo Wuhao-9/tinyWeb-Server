@@ -59,6 +59,7 @@ public:
     void init();
     void init(const int fd, const sockaddr_in& addr, const std::string& root);
     void setStatus(const char s) { if (s == 0 || s == 1) status_ = s; }
+    char getStatus() { return status_; }
     void process();
     const int getFD() { return fd_; }
 

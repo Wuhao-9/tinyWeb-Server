@@ -8,6 +8,7 @@
 #include <list>
 #include <mutex>
 #include <atomic>
+#include <cassert>
 #include <condition_variable>
 template <typename T>
 class thread_pool {
@@ -105,15 +106,19 @@ void thread_pool<T>::run() {
         locker.unlock();
         if (!request) continue;
         if (ser_config::net_model == 1) { // reactor
-            auto ret = request->recv_data();
-            if (ret == true) {
-                // 读成功，开展业务逻辑
-                // request->process(); // 暂时就cout客户端请求，回应固定字符串
-                request->process();
+            if (request->getStatus() == 0) { // read
+                auto ret = request->recv_data();
+                if (ret == true) {
+                    // 读成功，开展业务逻辑
+                    request->process();
+                } else {
+                    // 对方断开连接\recv失败，等待定时器超时清理对应客户端即可
+                }
+            } else if (request->getStatus() == 1) {
+                assert(false); // 暂时不处理写数据
             } else {
-                // 对方断开连接\recv失败，等待定时器超时清理对应客户端即可
+                assert(false); // 即不是读也不是写，error！
             }
-
         } else { // proactor 
 
         }

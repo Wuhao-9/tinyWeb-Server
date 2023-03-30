@@ -86,6 +86,7 @@ void http_conn::process() {
         // 在epoll中注册写事件
         utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLOUT, ser_config::conn_trigger);
     } else {
+        // assert(::munmap(file_addr_, file_stat_.st_size) == 0);
         if (!requ_info_.linger_) { // 若为短连接，则关闭连接
         // TODO：此处只是简单的关闭了文件描述符等相关操作
         //       并没有移除定时器，释放定时器相关资源
@@ -186,8 +187,9 @@ void http_conn::build_send_data(const HTTP_CODE requ_status) {
         return;
     }
     };
-    iov_[0].iov_base = const_cast<char*>(resp_.str().c_str());
-    iov_[0].iov_len = std::strlen(static_cast<char*>(iov_[0].iov_base));
+    message_ = resp_.str();
+    iov_[0].iov_base = const_cast<char*>(message_.c_str());
+    iov_[0].iov_len = message_.size();
     iov_count_ = 1;
     send_total_bytes_ = iov_[0].iov_len;
     return;
