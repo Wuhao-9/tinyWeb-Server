@@ -122,7 +122,6 @@ void web_server::handle_newCoon() {
         int client_fd = ::accept(listenFD_, (sockaddr*)&client_addr, &addr_len);
         if (client_fd == -1) {
             std::cerr << "accept new client failure: " << std::strerror(errno) << std::endl;
-            // assert(false);
             return;
         } else if (http_conn::user_count >= MAX_CONN_FD - 7) {
             show_error(client_fd, "Internal server busy");
@@ -151,14 +150,17 @@ void web_server::create_timer(http_conn* conn) {
 
 void web_server::handle_client_exit(int client_fd) {
     bool ret = timerList_->delete_timer(timers_ + client_fd);
-    assert(ret == true);
-    std::clog << "In [web_server::handle_client_exit] close fd: " << client_fd << std::endl;
+    if (ret == false) {
+        std::clog << "The user is exited by other thread" << std::endl;
+    } else {
+        std::clog << "In [web_server::handle_client_exit] close fd: " << client_fd << std::endl;
+    }
 }
 
 void web_server::handle_recv(int fd) {
     if (ser_config::net_model == 1) { // reactor
         timerList_->update_timer(timers_ + fd, TIME_SLOT * 3 + std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())); // 更新计数器时间
-        pool_->enqueue(users_ + fd, 0);
+        pool_->enqueue(users_ + fd, http_conn::RECV);
     } else { // proactor
         // .....
     }
@@ -193,7 +195,7 @@ bool web_server::handle_signal(bool* const timeout, bool* const terminated) {
 void web_server::handle_write(int fd) {
     if (ser_config::net_model == 1) { // reactor
         timerList_->update_timer(timers_ + fd, TIME_SLOT * 3 + std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())); // 更新计数器时间
-        pool_->enqueue(users_ + fd, 1);
+        pool_->enqueue(users_ + fd, http_conn::WRITE);
 
     } else { // proactor
         // .....
@@ -203,7 +205,6 @@ void web_server::handle_write(int fd) {
 void web_server::eventLoop() {
     bool timeout = false;
     bool terminated = false;
-    static int count = 0;
     ::epoll_event ready_event[MAX_EVENTS];
     while (!terminated) {
         int num = ::epoll_wait(epollFD_, ready_event, MAX_EVENTS, -1);
@@ -212,12 +213,10 @@ void web_server::eventLoop() {
             break;
         } else if (num == -1 && errno == EINTR)
             continue;
-        printf("{%d} epoll wait wakeUp", ++count);
         for (int i = 0; i < num; i++) {
             int sock_fd = ready_event[i].data.fd;
             if (sock_fd == listenFD_) {
                 handle_newCoon();
-                std::cout << "--[new connection]" << std::endl;
             } else if (ready_event[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                 std::cout << "--[user exit]" << std::endl;
                 handle_client_exit(sock_fd);
@@ -225,16 +224,13 @@ void web_server::eventLoop() {
                 // 每隔5秒会产生alarm信号，其handler会向管道写入SIGALRM
                 // 主线监听管道读端，若读端有数据且为SIGALARM,则将timeout标志置为true
                 // 当timeout为true时，定时器链表会遍历其elem，若有定时器超时，则将会清除该用户的相关资源
-                std::cout << "--[handle signal]" << std::endl;
                 bool flag = handle_signal(&timeout, &terminated);
                 if (!flag) {
                     std::cerr << "read pipe failure" << std::endl;
                 }
             } else if (ready_event[i].events & EPOLLIN) {
-                std::cout << "--[new recv]" << std::endl;
                 handle_recv(sock_fd);
             } else if (ready_event[i].events & EPOLLOUT) {
-                std::cout << "--[new write]" << std::endl;
                 handle_write(sock_fd);
             }
         }

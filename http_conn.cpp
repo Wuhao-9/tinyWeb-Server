@@ -86,15 +86,13 @@ void http_conn::process() {
         // 在epoll中注册写事件
         utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLOUT, ser_config::conn_trigger);
     } else {
-        // assert(::munmap(file_addr_, file_stat_.st_size) == 0);
+        munmap();
         if (!requ_info_.linger_) { // 若为短连接，则关闭连接
-        // TODO：此处只是简单的关闭了文件描述符等相关操作
-        //       并没有移除定时器，释放定时器相关资源
-        //        应该重构统计客户与定时器相关代码，尽量做到低耦合
-        context_.handle_client_exit(fd_);
+            context_.handle_client_exit(fd_); // 关闭文件描述符、移除定时器、释放定时器相关资源
+            return;
         } else { // 负责继续等待读事件就绪
-            utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);    
             init();
+            utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);    
         }
     }
 }
@@ -105,13 +103,92 @@ bool http_conn::try_send() {
         if (errno == EAGAIN || errno == EWOULDBLOCK) { // 发送缓冲区已满，注册epoll写事件
             return false;
         } else {
-            std::cerr << "Unknow net error occurred: " << std::strerror(errno) << std::endl;
+            std::cerr << "unexpected net error occurred: " << std::strerror(errno) << std::endl;
             return false;
         }
     } else if (ret == send_total_bytes_) {
         return true;
     } else {
-        assert(false); // 一次性没有写完全部数据，暂时触发assert（后续做相应优化）
+        send_total_bytes_ -= ret;
+        if (ret >= iov_[0].iov_len) {
+            iov_[0].iov_len = 0;
+            iov_[0].iov_base = nullptr;
+            iov_[1].iov_base += ret - iov_[0].iov_len;
+            iov_[1].iov_len -= ret + iov_[0].iov_len;
+        } else {
+            iov_[0].iov_base += ret;
+            iov_[0].iov_len -= ret;
+        }
+        return false;
+    }
+}
+
+void http_conn::send() {
+    if (send_total_bytes_ == 0)
+        assert(false);
+    if (ser_config::conn_trigger == 0) { // LT
+        auto ret = writev(fd_, iov_, iov_count_);
+        if (ret == -1) {
+            std::cerr << "unexpected net error occurred: " << std::strerror(errno) << std::endl;
+            context_.handle_client_exit(fd_); // 关闭文件描述符、移除定时器、释放定时器相关资源
+            return;
+        } else if (ret == send_total_bytes_) {
+            munmap();
+            if (!requ_info_.linger_) { // 若为短连接，则关闭连接
+                context_.handle_client_exit(fd_);
+                return;
+            } else { // 负责继续等待读事件就绪
+                init();
+                utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);    
+            }
+        } else {
+            send_total_bytes_ -= ret;
+            if (ret >= iov_[0].iov_len) {
+                iov_[0].iov_len = 0;
+                iov_[0].iov_base = nullptr;
+                iov_[1].iov_base += ret - iov_[0].iov_len;
+                iov_[1].iov_len -= ret + iov_[0].iov_len;
+            } else {
+                iov_[0].iov_base += ret;
+                iov_[0].iov_len -= ret;
+            }
+            utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLOUT, ser_config::conn_trigger);
+            return;
+        }
+
+    } else if (ser_config::conn_trigger == 1){ // ET
+        while (true) {
+            auto ret = writev(fd_, iov_, iov_count_);
+            if (ret == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) { // 发送缓冲区已满，注册epoll写事件
+                    utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLOUT, ser_config::conn_trigger);
+                    return;
+                } else {
+                    std::cerr << "Unexpected net error occurred: " << std::strerror(errno) << std::endl;
+                    context_.handle_client_exit(fd_); // 关闭文件描述符、移除定时器、释放定时器相关资源
+                    return;
+                }
+            } else if (ret == send_total_bytes_) {
+                munmap();
+                if (!requ_info_.linger_) { // 若为短连接，则关闭连接
+                    context_.handle_client_exit(fd_);
+                } else { // 负责继续等待读事件就绪
+                    init();
+                    utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);    
+                }
+            } else {
+                send_total_bytes_ -= ret;
+                if (ret >= iov_[0].iov_len) {
+                    iov_[0].iov_len = 0;
+                    iov_[0].iov_base = nullptr;
+                    iov_[1].iov_base += ret - iov_[0].iov_len;
+                    iov_[1].iov_len -= ret + iov_[0].iov_len;
+                } else {
+                    iov_[0].iov_base += ret;
+                    iov_[0].iov_len -= ret;
+                }
+            }
+        }
     }
 }
 
@@ -132,6 +209,11 @@ void http_conn::assemble_reps_header(const std::size_t content_len) {
 
 void http_conn::assemble_content(const char* content) {
     resp_ << content;
+}
+
+void http_conn::munmap() {
+    if (html_file)
+        assert(::munmap(file_addr_, file_stat_.st_size) == 0);
 }
 
 void http_conn::build_response(int code, const char* tittle, const std::size_t content_len, const char* content) {
@@ -180,6 +262,7 @@ void http_conn::build_send_data(const HTTP_CODE requ_status) {
     }
     case FILE_REQUEST: {
         build_response(200, ok_200_title);
+        html_file = true;
         return;
     }
     default: {
@@ -398,6 +481,7 @@ void http_conn::init() {
     file_addr_ = nullptr;
     iov_count_ = 0;
     send_total_bytes_ = 0;
+    html_file = false;
     
     std::memset(iov_, 0, sizeof(iov_));
 }

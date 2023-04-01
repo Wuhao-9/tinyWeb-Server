@@ -49,10 +49,14 @@ public:
     enum LINE_STATUS {
         LINE_OK = 0,
         LINE_BAD,   // 当前行信息格式错误
-        LINE_OPEN   
-// 当前行不完整
+        LINE_OPEN   // 当前行不完整
     };
 
+    enum CUR_STATUS {
+        RECV,
+        WRITE
+    };
+    
 public:
     http_conn(web_server& context);
     bool recv_data();
@@ -61,6 +65,7 @@ public:
     void setStatus(const char s) { if (s == 0 || s == 1) status_ = s; }
     char getStatus() { return status_; }
     void process();
+    void send();
     const int getFD() { return fd_; }
 
 private:
@@ -77,6 +82,7 @@ private:
     inline void assemble_state_line(int code, const char* tittle);
     inline void assemble_reps_header(const std::size_t content_len);
     inline void assemble_content(const char* content);
+    inline void munmap();
     bool try_send();
 
 private:
@@ -112,6 +118,7 @@ private:
     std::ostringstream resp_;
     struct iovec iov_[2];
     unsigned iov_count_;
+    bool html_file;
     std::size_t send_total_bytes_;
     std::string message_;
 };

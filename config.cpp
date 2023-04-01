@@ -61,4 +61,15 @@ void ser_config::parse_arg(int argc, char* argv[]) {
         }
         }
     }
+    if (trigger_mode == 1) {
+        listen_trigger = 1;
+        conn_trigger = 0;
+    } else if (trigger_mode == 2) {
+        listen_trigger = 0;
+        conn_trigger = 1;
+    } else if (trigger_mode == 3) {
+        listen_trigger = conn_trigger = 1;
+    } else { // Default
+        listen_trigger = conn_trigger = 0;
+    }
 }
