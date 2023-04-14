@@ -10,6 +10,9 @@
 #include <cerrno>
 #include <iostream>
 #include <cstring>
+#include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
 
 std::atomic<std::size_t> http_conn::user_count(0);
 
@@ -19,6 +22,10 @@ static const char* log_page = "/log.html";
 static const char* picture_page = "/picture.html";
 static const char* video_page = "/video.html";
 static const char* follow_page = "/fans.html";
+static const char* registerERROR_page = "/registerError.html";
+static const char* loginERROR_page = "/logError.html";
+static const char* User_page = "/welcome.html";
+
 
 //定义http响应的一些状态信息
 static const char *ok_200_title = "OK";
@@ -30,6 +37,13 @@ static const char *error_404_title = "Not Found";
 static const char *error_404_form = "The requested file was not found on this server.\n";
 static const char *error_500_title = "Internal Error";
 static const char *error_500_form = "There was an unusual problem serving the request file.\n";
+
+namespace http_sql_info {
+    static std::unordered_map<std::string, std::string> table_users; // DataBase table中的用户信息
+    static std::shared_mutex rw_mutex;
+}
+
+using namespace http_sql_info;
 
 http_conn::http_conn(web_server& context)
     : context_(context) {}
@@ -114,7 +128,7 @@ bool http_conn::try_send() {
             iov_[0].iov_len = 0;
             iov_[0].iov_base = nullptr;
             iov_[1].iov_base += ret - iov_[0].iov_len;
-            iov_[1].iov_len -= ret + iov_[0].iov_len;
+            iov_[1].iov_len -= ret - iov_[0].iov_len;
         } else {
             iov_[0].iov_base += ret;
             iov_[0].iov_len -= ret;
@@ -147,7 +161,7 @@ void http_conn::send() {
                 iov_[0].iov_len = 0;
                 iov_[0].iov_base = nullptr;
                 iov_[1].iov_base += ret - iov_[0].iov_len;
-                iov_[1].iov_len -= ret + iov_[0].iov_len;
+                iov_[1].iov_len -= ret - iov_[0].iov_len;
             } else {
                 iov_[0].iov_base += ret;
                 iov_[0].iov_len -= ret;
@@ -172,9 +186,11 @@ void http_conn::send() {
                 munmap();
                 if (!requ_info_.linger_) { // 若为短连接，则关闭连接
                     context_.handle_client_exit(fd_);
+                    return;
                 } else { // 负责继续等待读事件就绪
                     init();
                     utility::modify_event(http_conn::get_epollFD(), fd_, EPOLLIN, ser_config::conn_trigger);    
+                    return;
                 }
             } else {
                 send_total_bytes_ -= ret;
@@ -182,7 +198,7 @@ void http_conn::send() {
                     iov_[0].iov_len = 0;
                     iov_[0].iov_base = nullptr;
                     iov_[1].iov_base += ret - iov_[0].iov_len;
-                    iov_[1].iov_len -= ret + iov_[0].iov_len;
+                    iov_[1].iov_len -= ret - iov_[0].iov_len;
                 } else {
                     iov_[0].iov_base += ret;
                     iov_[0].iov_len -= ret;
@@ -256,7 +272,7 @@ void http_conn::build_send_data(const HTTP_CODE requ_status) {
         build_response(403, error_403_title, std::strlen(error_403_form), error_403_form);
         break;
     }
-    case NO_REQUEST: {
+    case NO_RESOURCE: {
         build_response(404, error_404_title, std::strlen(error_404_form), error_404_form);
         break;
     }
@@ -317,6 +333,33 @@ http_conn::HTTP_CODE http_conn::prase_recvData() {
     return NO_REQUEST;
 }
 
+void http_conn::init_users_SQL_info(sql_conn_pool* pool) {
+    MYSQL* cur_conn = nullptr;
+    sql_conn_guard guard(&cur_conn, pool);
+
+    // 查询user表中的所有account、passwd
+    auto ret = ::mysql_query(cur_conn, "SELECT account, passwd FROM user_info");
+    if (ret != 0) {
+        std::cerr << "[MYSQL] SELECT error: "<< ::mysql_error(cur_conn);
+    }
+
+    // 取出完整的结果集
+    MYSQL_RES* result = mysql_store_result(cur_conn);
+
+    // 得到结果集的列数
+    auto col_num = ::mysql_num_fields(result);
+    if (col_num != 2) {
+        std::runtime_error("[MYSQL] unexpected result!");
+    }
+
+    // 从结果集中获取下一行，并缓存至map
+    while (MYSQL_ROW cur_row = mysql_fetch_row(result)) {
+        table_users[cur_row[0]] = cur_row[1];
+    }
+
+    ::mysql_free_result(result);
+}
+
 http_conn::HTTP_CODE http_conn::handle_request() {
     requ_info_.file_path_ = root_;
     const char which_page = requ_info_.url_[1];
@@ -324,10 +367,49 @@ http_conn::HTTP_CODE http_conn::handle_request() {
         // 提取账号密码
         // 若为登录op，判断信息是否匹配
         // 若为注册op，则注册用户并判断是否注册成功
+        auto pos = requ_info_.content_.find_first_of('&');
+        if (pos == std::string::npos) {
+            return HTTP_CODE::BAD_REQUEST;
+        }   
+        auto account = requ_info_.content_.substr(0, pos).substr(5);
+        auto pwd = requ_info_.content_.substr(pos+1).substr(9);
+
+        if (which_page == '2') { // sign in
+            std::shared_lock<std::shared_mutex> lock(rw_mutex); // 读者
+            auto res = table_users.find(account); // 已存在相同账号
+            lock.unlock();
+            if (res != table_users.end() && pwd == res->second) {
+                requ_info_.file_path_ += User_page;
+            } else {
+                requ_info_.file_path_ += loginERROR_page;
+            }
+        } else if (which_page == '3') { // sign up
+            std::shared_lock<std::shared_mutex> lock(rw_mutex); // 读者
+            auto res = table_users.find(account);
+            lock.unlock();
+
+            if (res != table_users.end()) { // 已存在相同账号
+                requ_info_.file_path_ += registerERROR_page;
+            } else { // 可注册该账号
+                std::string sql_cmd = "INSERT INTO user_info (account, passwd) VALUES(\'";
+                sql_cmd += account += "\', \'";
+                sql_cmd += pwd += "\');";
+
+                int ret = ::mysql_query(sql_conn_, sql_cmd.c_str());
+                if (ret == 0) {
+                    requ_info_.file_path_ += User_page;
+                    std::lock_guard<std::shared_mutex> lock(rw_mutex); // 写者
+                    table_users[account] = pwd;
+                } else {
+                    std::cerr << "[MYSQL] Error: " << ::mysql_error(sql_conn_) << std::endl;
+                    requ_info_.file_path_ += registerERROR_page;
+                }
+            }
+        }
     }
     
     // 获取目标文件的路径
-    if (which_page == '0') { // 请求注册用户页面
+    else if (which_page == '0') { // 请求注册用户页面
         requ_info_.file_path_ += register_page;
     } else if (which_page == '1') { // 请求登录页面
         requ_info_.file_path_ += log_page;
@@ -451,7 +533,7 @@ http_conn::HTTP_CODE http_conn::parse_request_header(const std::string& text) {
         return GET_REQUEST; // 若没有请求体，则直接解析请求、组装响应报文
     } else if (text.compare(0, std::strlen("Connection:"), "Connection:") == 0) {
         text.compare(12, std::string::npos, "keep-alive") == 0 ? requ_info_.linger_ = true : requ_info_.linger_ = false; 
-    } else if (text.compare(0, 15, "Content-length:") == 0) {
+    } else if (text.compare(0, 15, "Content-Length:") == 0) {
         auto size = std::stoull(text.substr(16));
         requ_info_.content_len_ = size;
     } else if (text.compare(0, 5, "Host:") == 0) {
@@ -482,6 +564,8 @@ void http_conn::init() {
     iov_count_ = 0;
     send_total_bytes_ = 0;
     html_file = false;
+    sql_conn_ = nullptr;
+    message_ = "";
     
     std::memset(iov_, 0, sizeof(iov_));
 }

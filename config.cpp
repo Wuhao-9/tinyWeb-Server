@@ -14,6 +14,7 @@ int ser_config::log_write = 0;
 int ser_config::opt_linger = 0;
 int ser_config::sql_num = 8;
 int ser_config::thread_num = std::thread::hardware_concurrency();
+// 默认不关闭数据库日志
 int ser_config::close_log = 0;
 //并发模型,默认是Reactor
 int ser_config::net_model = 1; 

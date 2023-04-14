@@ -46,4 +46,13 @@ private:
 
 };
 
+class sql_conn_guard {
+public:
+    sql_conn_guard(MYSQL** conn, sql_conn_pool* pool);
+    ~sql_conn_guard();
+private:
+    MYSQL* cur_SQLconn_;
+    sql_conn_pool* context_;
+};
+
 #endif // SQL_CONN_POOL_H_

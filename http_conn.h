@@ -2,11 +2,13 @@
 #define HTTP_CONN_H_
 
 #include "epoll_info.hpp"
+#include "sql_conn_pool.h"
 #include <arpa/inet.h>
 #include <sys/uio.h> // for writev, struct iovec
 #include <sys/stat.h>
 #include <cstdlib>
 #include <sstream>
+#include <cassert>
 #include <string>
 #include <atomic>
 
@@ -62,11 +64,14 @@ public:
     bool recv_data();
     void init();
     void init(const int fd, const sockaddr_in& addr, const std::string& root);
-    void setStatus(const char s) { if (s == 0 || s == 1) status_ = s; }
+    void setStatus(const char s) { if (s == 0 || s == 1) status_ = s; else assert(false); }
     char getStatus() { return status_; }
     void process();
     void send();
     const int getFD() { return fd_; }
+    static void init_users_SQL_info(sql_conn_pool* pool);
+    const MYSQL** get_SQLConn_handle() const { return const_cast<const MYSQL**>(&sql_conn_); }
+    MYSQL** get_SQLConn_handle() { return &sql_conn_; }
 
 private:
     http_conn::HTTP_CODE prase_recvData();
@@ -84,7 +89,6 @@ private:
     inline void assemble_content(const char* content);
     inline void munmap();
     bool try_send();
-
 private:
     web_server& context_;
     int fd_;
@@ -121,6 +125,8 @@ private:
     bool html_file;
     std::size_t send_total_bytes_;
     std::string message_;
+    // 当前http连接持有的数据库连接
+    MYSQL* sql_conn_;
 };
 
 #endif // HTTP_CONN_H_

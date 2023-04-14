@@ -13,7 +13,7 @@
 #include <csignal>
 #include <sys/epoll.h>
 
-web_server::web_server()
+web_server::web_server(const std::string& db_user, const std::string& db_PWD, const std::string& db_name, const std::size_t conn_amount)
     : timerList_(new SortTimerList)
 {
     try {
@@ -35,8 +35,15 @@ web_server::web_server()
     }
     resource_root_ += std::string(work_dir, std::strlen(work_dir)) += "/root";
 
+    // about DataBase
+    sql_user_ = db_user;
+    sqlPWD_ = db_PWD;
+    DB_name_ = db_name;
+    conn_amount_ = conn_amount;
+
     create_epoll_instance();
     start_listen();
+    create_SQLConn_pool();
     create_thread_pool();
     init_signal();
 }
@@ -108,11 +115,17 @@ void web_server::init_signal() {
 
 void web_server::create_thread_pool() {
     try {
-        pool_ = new thread_pool<http_conn>;
+        pool_ = new thread_pool<http_conn>(db_conn_pool_);
     } catch (std::runtime_error& err) {
         std::cerr << err.what() << std::endl;
         throw;
     }
+}
+
+void web_server::create_SQLConn_pool() {
+    db_conn_pool_ = sql_conn_pool::get_SQLpool_Instance();
+    db_conn_pool_->init_connPool("localhost", sql_user_, sqlPWD_, DB_name_, 3306, conn_amount_, ser_config::close_log);
+    http_conn::init_users_SQL_info(db_conn_pool_);
 }
 
 void web_server::handle_newCoon() {

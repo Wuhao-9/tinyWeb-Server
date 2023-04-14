@@ -10,7 +10,10 @@
 
 void SortTimerList::timer::handle_timeout_conn(timer* t) {
     utility::remove_event(t->conn_->get_epollFD(), t->conn_->getFD());
-    close(t->conn_->getFD());
+    auto ret = close(t->conn_->getFD());
+    if (ret != 0) {
+        return;
+    }
     http_conn::user_count--;
 }
 

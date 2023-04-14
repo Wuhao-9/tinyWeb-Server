@@ -1,6 +1,7 @@
 #if !defined(THREAD_POOL_HPP_)
 #define THREAD_POOL_HPP_
 
+#include "sql_conn_pool.h"
 #include "http_conn.h"
 #include "config.h"
 #include <pthread.h>
@@ -13,7 +14,7 @@
 template <typename T>
 class thread_pool {
 public:
-    thread_pool();
+    thread_pool(sql_conn_pool* const conn_pool);
     ~thread_pool();
     void enqueue(http_conn* client, char which);
 private:
@@ -24,6 +25,7 @@ private:
     const static int MAX_REQUESTS = 3000;
     pthread_t* threads_array_;
     std::list<T*> request_queue_;
+    sql_conn_pool* sql_pool_;
     std::mutex mutex_;
     std::condition_variable cv_;
     std::atomic<bool> stop_;
@@ -31,8 +33,9 @@ private:
 };
 
 template<typename T>
-thread_pool<T>::thread_pool()
+thread_pool<T>::thread_pool(sql_conn_pool* const conn_pool)
     : threads_array_(nullptr)
+    , sql_pool_(conn_pool)
     , mutex_()
     , cv_()
     , stop_(false)
@@ -110,6 +113,7 @@ void thread_pool<T>::run() {
                 auto ret = request->recv_data();
                 if (ret == true) {
                     // 读成功，开展业务逻辑
+                    sql_conn_guard db_conn(request->get_SQLConn_handle(), sql_pool_);
                     request->process();
                 } else {
                     // 对方断开连接\recv失败，等待定时器超时清理对应客户端即可
